@@ -19,7 +19,7 @@ import java.net.SocketAddress;
 public class ProxyServerHandler extends ChannelInboundHandlerAdapter {
     private final Logger logger = LoggerFactory.getLogger(getClass());
     private final static AttributeKey<Channel> targetServerAttrKey = AttributeKey.newInstance("targetServerChannel");
-    private final static AttributeKey<Channel> proxyServerAttrKey = AttributeKey.newInstance("proxyServerChannel");
+    final static AttributeKey<Channel> proxyServerAttrKey = AttributeKey.newInstance("proxyServerChannel");
     private final static NioEventLoopGroup eventLoopGroup = new NioEventLoopGroup();
     private final Bootstrap bootstrap = new Bootstrap();
 
@@ -69,27 +69,35 @@ public class ProxyServerHandler extends ChannelInboundHandlerAdapter {
     }
 
     private Channel createTargetServerTcpTunnelChannel(String host, int port) {
+        return connectToTargetServer(host, port, new ProxyHttpsTunnelChannelInitializer());
+    }
+
+    private Channel createTargetServerTcpChannel(String host, int port) {
+        return connectToTargetServer(host, port, new ProxyHttpChannelInitializer());
+    }
+
+    /**
+     * 连接到目标服务器
+     *
+     * @param host               主机名或者 ip 地址
+     * @param port               端口号
+     * @param channelInitializer channel 初始化器
+     * @return 连接建立就绪的 channel
+     */
+    private Channel connectToTargetServer(String host, int port,
+                                          ChannelInitializer<? extends NioSocketChannel> channelInitializer) {
         ChannelFuture future = bootstrap
                 .channel(NioSocketChannel.class)
                 .group(eventLoopGroup)
-                .handler(new ChannelInitializer<NioSocketChannel>() {
-                    @Override
-                    protected void initChannel(NioSocketChannel channel) {
-                        channel.pipeline()
-                                .addLast(new ChannelInboundHandlerAdapter() {
-                                    @Override
-                                    public void channelRead(ChannelHandlerContext ctx, Object msg) {
-                                        Channel proxyServerChannel = ctx.channel().attr(proxyServerAttrKey).get();
-                                        proxyServerChannel.writeAndFlush(msg);
-                                    }
-                                });
-                    }
-                }).connect(host, port);
+                .handler(channelInitializer)
+                .connect(host, port);
+
         future.addListener(future1 -> {
             if (future1.isSuccess()) {
                 logger.info("目标服务器{}：{}连接已建立！", host, port);
             }
         });
+
         try {
             return future.sync().channel();
         } catch (InterruptedException e) {
@@ -97,41 +105,6 @@ public class ProxyServerHandler extends ChannelInboundHandlerAdapter {
         }
     }
 
-    private Channel createTargetServerTcpChannel(String host, int port) {
-        ChannelFuture future = bootstrap
-                .channel(NioSocketChannel.class)
-                .group(eventLoopGroup)
-                .handler(new ChannelInitializer<NioSocketChannel>() {
-                    @Override
-                    protected void initChannel(NioSocketChannel channel) {
-                        channel.pipeline()
-                                .addLast(new HttpRequestEncoder() {
-                                    @Override
-                                    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-                                        super.write(ctx, msg, promise);
-                                        ctx.pipeline().remove(this.getClass());
-                                    }
-                                })
-                                .addLast(new ChannelInboundHandlerAdapter() {
-                                    @Override
-                                    public void channelRead(ChannelHandlerContext ctx, Object msg) {
-                                        Channel proxyServerChannel = ctx.channel().attr(proxyServerAttrKey).get();
-                                        proxyServerChannel.writeAndFlush(msg);
-                                    }
-                                });
-                    }
-                }).connect(host, port);
-        future.addListener(future1 -> {
-            if (future1.isSuccess()) {
-                logger.info("目标服务器{}：{}连接已建立！", host, port);
-            }
-        });
-        try {
-            return future.sync().channel();
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        }
-    }
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
